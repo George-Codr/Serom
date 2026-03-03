@@ -1,0 +1,228 @@
+name: Build Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master, '3.*']
+  pull_request:
+    branches: [master, '3.*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: ${{ github.repository_owner == 'aikwp' && github.event.repository.name == 'Serom' }}
+    name: Build Android Python (${{ matrix.version }}) NDK ${{ matrix.ndk_major }}
+    runs-on: macos-15
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: 3.13.12
+            filename: Python-3.13.12.tgz
+            folder: Python-3.13.12
+            url_secret: PY313_URL
+            ndk_version: 27.3.13750724
+            ndk_major: 27
+          - version: 3.14.3
+            filename: Python-3.14.3.tgz
+            folder: Python-3.14.3
+            url_secret: PY314_URL
+            ndk_version: 27.3.13750724
+            ndk_major: 27
+          - version: 3.15.0a6
+            filename: Python-3.15.0a6.tgz
+            folder: Python-3.15.0a6
+            url_secret: PY315_URL
+            ndk_version: 27.3.13750724
+            ndk_major: 27
+
+    env:
+      ARCH: aarch64
+      ANDROID_NDK_VERSION: ${{ matrix.ndk_version }}
+      ANDROID_SDK_VERSION: 35
+      ANDROID_BUILD_TOOLS: 35.0.0
+      LLVM_VERSION: 21
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install macOS dependencies for Python build
+        run: |
+          brew update
+          for pkg in gdbm ncurses readline libffi tcl-tk ossp-uuid xz wget dpkg; do
+            if ! brew list --formula | grep -q "^${pkg}\$"; then
+              echo "Installing $pkg..."
+              brew install "$pkg"
+            else
+              echo "$pkg already installed."
+            fi
+          done
+          brew uninstall gcc || true
+          echo "✅ macOS build dependencies installed."
+      - name: Set up Android SDK + NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          set -euxo pipefail
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-${ANDROID_SDK_VERSION}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "ndk;${ANDROID_NDK_VERSION}"
+          echo "✅ Android NDK ${ANDROID_NDK_VERSION} installed."
+          ls -1 $ANDROID_HOME/ndk/
+
+      - name: Set environment to use SDK/NDK Clang
+        run: |
+          set -euxo pipefail
+
+          export NDK_PATH="$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}"
+          if [ -d "$NDK_PATH/toolchains/llvm/prebuilt/darwin-x86_64" ]; then
+            export TOOLCHAIN="$NDK_PATH/toolchains/llvm/prebuilt/darwin-x86_64"
+          elif [ -d "$NDK_PATH/toolchains/llvm/prebuilt/darwin-arm64" ]; then
+            export TOOLCHAIN="$NDK_PATH/toolchains/llvm/prebuilt/darwin-arm64"
+          else
+            echo "⚠️ NDK toolchain not found; using system clang instead"
+            export TOOLCHAIN="/usr/bin"
+          fi
+          echo "$TOOLCHAIN/bin" >> $GITHUB_PATH
+          if [ -x "$TOOLCHAIN/bin/clang" ]; then
+            export CC="$TOOLCHAIN/bin/clang"
+            export CXX="$TOOLCHAIN/bin/clang++"
+          else
+            export CC=$(command -v clang)
+            export CXX=$(command -v clang++)
+          fi
+          export AR="$TOOLCHAIN/bin/llvm-ar"
+          export LD="$TOOLCHAIN/bin/ld.lld"
+          export NM="$TOOLCHAIN/bin/llvm-nm"
+          export RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
+          echo "✅ Using Clang from SDK/NDK"
+          $CC --version
+          $AR --version
+          export PATH="/usr/local/opt/tcl-tk/bin:$PATH"
+          export CPPFLAGS="${CPPFLAGS:-}"
+          export LDFLAGS="${LDFLAGS:-}"
+          export CPPFLAGS="-I/usr/local/opt/gdbm/include -I/usr/local/opt/ncurses/include -I/usr/local/opt/readline/include -I/usr/local/opt/libffi/include -I/usr/local/opt/tcl-tk/include $CPPFLAGS"
+          export LDFLAGS="-L/usr/local/opt/gdbm/lib -L/usr/local/opt/ncurses/lib -L/usr/local/opt/readline/lib -L/usr/local/opt/libffi/lib -L/usr/local/opt/tcl-tk/lib $LDFLAGS"
+          export PKG_CONFIG_PATH="/usr/local/opt/libffi/lib/pkgconfig"
+          if [ "$(uname)" = "Darwin" ]; then
+            export CPU_COUNT="$(sysctl -n hw.ncpu)"
+          else
+            export CPU_COUNT="$(nproc)"
+          fi
+          echo "✅ Host environment configured."
+
+      - name: Download official Python source tarball (from Secret)
+        run: |
+          set -euxo pipefail
+          FILE="${{ matrix.filename }}"
+          FOLDER="${{ matrix.folder }}"
+          VERSION="${{ matrix.version }}"
+
+          # Select correct secret directly by version
+          case "$VERSION" in
+            3.13.12) URL="${{ secrets.PY313_URL }}" ;;
+            3.14.3) URL="${{ secrets.PY314_URL }}" ;;
+            3.15.0a6) URL="${{ secrets.PY315_URL }}" ;;
+            *) echo "❌ Unknown version $VERSION"; exit 1 ;;
+          esac
+
+          if [ -z "$URL" ]; then
+            echo "❌ Secret for version $VERSION not set."
+            exit 1
+          fi
+
+          echo "Downloading Python from $URL"
+          curl -L "$URL" -o "$FILE"
+          tar -xzf "$FILE"
+          mv "$FOLDER" "cpython-${VERSION}"
+          
+
+      - name: Build CPython for Android
+        working-directory: ./cpython-${{ matrix.version }}
+        env:
+          CC: ${{ env.CC }}
+          CXX: ${{ env.CXX }}
+          AR: ${{ env.AR }}
+          LD: ${{ env.LD }}
+          NM: ${{ env.NM }}
+          RANLIB: ${{ env.RANLIB }}
+        run: |
+          set -euxo pipefail
+          VERSION="${{ matrix.version }}"
+          case "$VERSION" in
+            3.13.12) wget https://raw.githubusercontent.com/yubrajbhoi/termux-python/fb5bad6582a83fe6db36840f47e29521083160a1/termux.patch && git apply termux.patch ;;
+            3.14.3) wget https://raw.githubusercontent.com/yubrajbhoi/termux-python/refs/heads/main/termux.patch && git apply termux.patch ;;
+            *) echo "Skip" ;;
+          esac
+          cd Android
+          ./android.py ci --fast-ci aarch64-linux-android
+          echo "✅ Build finished for version ${{ matrix.version }}"
+          ls -lh ../cross-build/aarch64-linux-android || echo "⚠️ Build output not found"
+#          ../cross-build/aarch64-linux-android/prefix/bin/python3 -c "print(__import__('sys').version)"
+
+      - name: Package as .deb
+        run: |
+          set -euxo pipefail
+          VERSION="${{ matrix.version }}"
+          NDK_MAJOR="${{ matrix.ndk_major }}"
+          PKG_NAME="pyv${VERSION//./}-ndk${NDK_MAJOR}"
+          PKG_VERSION="$VERSION"
+          ARCH="aarch64"
+          BUILD_DIR="./cpython-${VERSION}/cross-build/${ARCH}-linux-android"
+          OUT_DIR=$( [ -d "$BUILD_DIR/prefix" ] && echo "$BUILD_DIR/prefix" || echo "$BUILD_DIR/install" )
+          DEB_DIR="$PKG_NAME"
+
+          mkdir -p "$DEB_DIR/DEBIAN"
+          mkdir -p "$DEB_DIR/usr"
+          cp -r "$OUT_DIR"/* "$DEB_DIR/usr/"
+
+          cat > "$DEB_DIR/DEBIAN/control" <<EOF
+          Package: $PKG_NAME
+          Version: $PKG_VERSION
+          Architecture: $ARCH
+          Maintainer: Cross-compiled by NotFound
+          Description: Python $PKG_VERSION cross-compiled for Termux aarch64 using SDK Clang + LLVM ${LLVM_VERSION} with NDK r${NDK_MAJOR}
+          EOF
+
+          cat > "$DEB_DIR/DEBIAN/postinst" <<EOF
+          #!/bin/sh
+          set -e
+          echo "$PKG_NAME installed successfully!"
+          exit 0
+          EOF
+          chmod 755 "$DEB_DIR/DEBIAN/postinst"
+
+          dpkg-deb --build "$DEB_DIR" pyv_${{ matrix.version }}_aarch64.deb
+
+      - name: Upload .deb as Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: deb-pyv${{ matrix.version }}
+          path: pyv_${{ matrix.version }}_aarch64.deb
+      - name: Create / Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: pyv__a
+          name: pyv
+          body: |
+            **Python:** 3.13,3.14,3.15
+            **Arch:** aarch64
+            **NDK:** r27
+            **Commit:** ${{ github.sha }}
+            **Run:** ${{ github.run_id }}
+
+            Built automatically by GitHub Actions.
+          files: |
+            pyv*_${{ matrix.version }}_aarch64.deb
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          draft: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
