@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    if: ${{ github.repository_owner == 'aikwp' && github.event.repository.name == 'Serom' }}
+    if: ${{ github.repository_owner == 'George-Codr' && github.event.repository.name == 'Serom' }}
     name: Build Android Python (${{ matrix.version }}) NDK ${{ matrix.ndk_major }}
     runs-on: macos-15
     timeout-minutes: 120
