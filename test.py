@@ -2,13 +2,12 @@ import os
 import tempfile
 import shutil
 import pytest
-from buildbot.util import secretutil
-from buildbot import config
 from buildbot.db import schema
+from buildbot import config
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://github:github@localhost:5432/testdb")
 
-def test_buildbot_master_worker_db():
+def test_buildbot_master_db():
     # Create temporary master directory
     master_dir = tempfile.mkdtemp(prefix="bbmaster_")
 
@@ -16,17 +15,19 @@ def test_buildbot_master_worker_db():
         # Minimal Buildbot master config
         c = config.Config(
             db=DATABASE_URL,
-            workers=[],
-            secrets=secretutil.getSecrets()
+            workers=[],   # no workers needed for DB test
+            # secrets are optional for DB tests
         )
 
         # Initialize schema
         schema.upgrade(c.db_url)
-        # Optionally, test inserting something into master DB
-        from buildbot.db import dbcommands
-        with dbcommands.DBConnection(DATABASE_URL) as db:
-            db.execute("SELECT 1;")
-            result = db.fetchone()
-            assert result[0] == 1
+
+        # Simple test: check DB connection
+        from sqlalchemy import create_engine, text
+        engine = create_engine(DATABASE_URL)
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT 1;")).scalar()
+            assert result == 1
+
     finally:
         shutil.rmtree(master_dir)
