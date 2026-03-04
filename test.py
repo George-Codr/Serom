@@ -1,33 +1,35 @@
 import os
+import subprocess
 import tempfile
 import shutil
 import pytest
-from buildbot.db import schema
-from buildbot import config
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://github:github@localhost:5432/testdb")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-def test_buildbot_master_db():
-    # Create temporary master directory
+def test_buildbot_db_initialization():
+    # create temp Buildbot master
     master_dir = tempfile.mkdtemp(prefix="bbmaster_")
-
     try:
-        # Minimal Buildbot master config
-        c = config.Config(
-            db=DATABASE_URL,
-            workers=[],   # no workers needed for DB test
-            # secrets are optional for DB tests
+        # initialize a new master in temp directory
+        subprocess.run(
+            ["buildbot", "create-master", master_dir, "--db", DATABASE_URL],
+            check=True,
         )
 
-        # Initialize schema
-        schema.upgrade(c.db_url)
+        # run database upgrade (creates tables in Postgres)
+        subprocess.run(
+            ["buildbot", "upgrade-master", master_dir, "--db", DATABASE_URL],
+            check=True,
+        )
 
-        # Simple test: check DB connection
-        from sqlalchemy import create_engine, text
-        engine = create_engine(DATABASE_URL)
-        with engine.connect() as conn:
-            result = conn.execute(text("SELECT 1;")).scalar()
-            assert result == 1
+        # check a simple SQL query directly via psycopg
+        import psycopg
+
+        with psycopg.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1;")
+                row = cur.fetchone()
+                assert row[0] == 1
 
     finally:
         shutil.rmtree(master_dir)
