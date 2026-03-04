@@ -52,4 +52,4 @@ jobs:
 
       - name: Run Buildbot DB tests
         run: |
-          pytest -vv test_buildbot_db.py
+          pytest -vv test.py
