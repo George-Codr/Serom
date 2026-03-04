@@ -1,4 +1,4 @@
-name: Test PostgreSQL with psycopg 3.3.3 (Python 3.13)
+name: Test Buildbot with Full psycopg
 
 on:
   push:
@@ -36,10 +36,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install psycopg[binary]==3.3.3
           pip install -r requirements.txt
 
-      - name: Wait for PostgreSQL to be ready
+      - name: Wait for PostgreSQL readiness
         run: |
           for i in {1..15}; do
             pg_isready -h localhost -p 5432 -U github && break
@@ -47,10 +46,10 @@ jobs:
             sleep 2
           done
 
-      - name: Export DATABASE_URL
+      - name: Set DATABASE_URL
         run: |
           echo "DATABASE_URL=postgresql://github:github@localhost:5432/testdb" >> $GITHUB_ENV
 
-      - name: Run tests
+      - name: Run Buildbot DB tests
         run: |
-          pytest -vv
+          pytest -vv test_buildbot_db.py
