@@ -1,0 +1,19 @@
+# Buildbot core & worker
+buildbot==3.10.1
+buildbot-worker==3.10.1
+
+# Full psycopg
+psycopg[all]==3.3.3
+
+# DB and migration tools
+sqlalchemy
+alembic
+
+# Testing framework
+pytest
+pytest-asyncio
+pytest-cov
+
+# Optional
+python-dotenv
+requests
